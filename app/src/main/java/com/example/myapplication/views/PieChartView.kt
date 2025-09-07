@@ -19,6 +19,11 @@ class PieChartView @JvmOverloads constructor(
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    
+    // 선택된 섹터 관련 변수
+    private var selectedSectorIndex = -1
+    private var overlayText = ""
     
     // Zoom 관련 변수
     private var scaleFactor = 1f
@@ -49,10 +54,17 @@ class PieChartView @JvmOverloads constructor(
         textPaint.color = Color.WHITE
         textPaint.textSize = 63f // 70f에서 10% 감소 (70 * 0.9 = 63)
         textPaint.textAlign = Paint.Align.CENTER
+        textPaint.setShadowLayer(4f, 2f, 2f, Color.BLACK) // 텍스트 그림자 추가
         
         linePaint.color = Color.BLACK
         linePaint.strokeWidth = 3f
         linePaint.style = Paint.Style.STROKE
+        
+        // 섹터 테두리용 페인트 설정
+        strokePaint.color = Color.WHITE
+        strokePaint.strokeWidth = 4f
+        strokePaint.style = Paint.Style.STROKE
+        strokePaint.setShadowLayer(2f, 1f, 1f, Color.BLACK)
         
         // ScaleGestureDetector 초기화
         scaleGestureDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -111,7 +123,56 @@ class PieChartView @JvmOverloads constructor(
         if (isZoomEnabled) {
             scaleGestureDetector.onTouchEvent(event)
         }
+        
+        // 터치 이벤트 처리
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                handleTouch(event.x, event.y)
+                return true
+            }
+        }
         return true
+    }
+    
+    private fun handleTouch(x: Float, y: Float) {
+        if (data.isEmpty()) return
+        
+        val centerX = width / 2f
+        val centerY = height / 2f - 80f
+        val radius = minOf(centerX, centerY) * 0.6f
+        
+        // 터치 지점이 차트 영역 내에 있는지 확인
+        val distance = kotlin.math.sqrt(
+            ((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toDouble()
+        ).toFloat()
+        
+        if (distance <= radius) {
+            // 터치 각도 계산
+            val angle = kotlin.math.atan2((y - centerY).toDouble(), (x - centerX).toDouble())
+            var touchAngle = Math.toDegrees(angle).toFloat()
+            
+            // -90도부터 시작하도록 조정
+            if (touchAngle < 0) touchAngle += 360f
+            touchAngle = (touchAngle + 90f) % 360f
+            
+            // 해당 각도에 해당하는 섹터 찾기
+            var currentAngle = 0f
+            for (i in data.indices) {
+                val sweepAngle = (data[i].percentage / 100f) * 360f
+                if (touchAngle >= currentAngle && touchAngle < currentAngle + sweepAngle) {
+                    selectedSectorIndex = i
+                    overlayText = "${data[i].category}\n${String.format("%.1f", data[i].percentage)}%\n금액: ${String.format("%,d", data[i].amount)}원"
+                    invalidate()
+                    break
+                }
+                currentAngle += sweepAngle
+            }
+        } else {
+            // 차트 영역 밖을 터치하면 선택 해제
+            selectedSectorIndex = -1
+            overlayText = ""
+            invalidate()
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -138,7 +199,7 @@ class PieChartView @JvmOverloads constructor(
         }
 
         val centerX = width / 2f
-        val centerY = height / 2f
+        val centerY = height / 2f - 80f // 하단 마진을 위해 차트를 위로 이동
         val radius = minOf(centerX, centerY) * 0.6f // 차트 크기를 줄여서 라벨 공간 확보
 
         var startAngle = -90f // 시작 각도를 12시 방향으로 설정
@@ -146,7 +207,20 @@ class PieChartView @JvmOverloads constructor(
         data.forEachIndexed { index, item ->
             val sweepAngle = (item.percentage / 100f) * 360f
             
+            // 선택된 섹터인지 확인
+            val isSelected = selectedSectorIndex == index
+            
             paint.color = colors[index % colors.size]
+            
+            // 선택된 섹터는 약간 밝게 표시
+            if (isSelected) {
+                val hsv = FloatArray(3)
+                Color.colorToHSV(colors[index % colors.size], hsv)
+                hsv[2] = minOf(1.0f, hsv[2] + 0.2f) // 밝기 증가
+                paint.color = Color.HSVToColor(hsv)
+            }
+            
+            // 섹터 그리기
             canvas.drawArc(
                 centerX - radius,
                 centerY - radius,
@@ -157,6 +231,18 @@ class PieChartView @JvmOverloads constructor(
                 true,
                 paint
             )
+            
+            // 섹터 테두리 그리기 (시인성 향상)
+            canvas.drawArc(
+                centerX - radius,
+                centerY - radius,
+                centerX + radius,
+                centerY + radius,
+                startAngle,
+                sweepAngle,
+                true,
+                strokePaint
+            )
 
             // 각 섹터의 중앙 각도 계산
             val midAngle = startAngle + sweepAngle / 2f
@@ -165,25 +251,46 @@ class PieChartView @JvmOverloads constructor(
             val shouldShowInternalText = sweepAngle > 30f // 30도 이상일 때만 내부에 텍스트 표시
             
             if (shouldShowInternalText) {
-                // 차트 내부에 텍스트 표시
-                val textRadius = radius * 0.5f
+                // 차트 내부에 텍스트 표시 (배경 추가)
+                val textRadius = radius * 0.4f
                 val textX = centerX + (textRadius * kotlin.math.cos(Math.toRadians(midAngle.toDouble()))).toFloat()
                 val textY = centerY + (textRadius * kotlin.math.sin(Math.toRadians(midAngle.toDouble()))).toFloat()
 
-                textPaint.color = Color.WHITE
-                textPaint.textSize = if (isFullscreen) 72f else 36f // 일반 모드: 36f로 수정
-                canvas.drawText(
-                    "${item.category}\n${String.format("%.1f", item.percentage)}%",
-                    textX,
-                    textY,
-                    textPaint
+                val textContent = "${item.category}\n${String.format("%.1f", item.percentage)}%"
+                textPaint.textSize = if (isFullscreen) 60f else 28f
+                
+                // 텍스트 배경 그리기
+                val textBounds = Rect()
+                textPaint.getTextBounds(textContent, 0, textContent.length, textBounds)
+                val padding = 10f
+                val bgWidth = textBounds.width() + padding * 2
+                val bgHeight = textBounds.height() + padding * 2
+                
+                // 반투명 배경 그리기
+                paint.color = Color.argb(180, 0, 0, 0)
+                paint.style = Paint.Style.FILL
+                canvas.drawRoundRect(
+                    textX - bgWidth / 2,
+                    textY - bgHeight / 2,
+                    textX + bgWidth / 2,
+                    textY + bgHeight / 2,
+                    8f, 8f, paint
                 )
+                
+                // 텍스트 그리기
+                textPaint.color = Color.WHITE
+                canvas.drawText(textContent, textX, textY + textBounds.height() / 3, textPaint)
             } else {
                 // 차트 외부에 라벨 표시 (연결선 포함)
                 drawExternalLabel(canvas, centerX, centerY, radius, midAngle, item, index)
             }
 
             startAngle += sweepAngle
+        }
+        
+        // 선택된 섹터에 대한 오버레이 텍스트 표시
+        if (selectedSectorIndex >= 0 && selectedSectorIndex < data.size) {
+            drawOverlayText(canvas, centerX, centerY, radius)
         }
         
         // 범례 제거 - 차트 내부에 텍스트로 표시
@@ -247,6 +354,60 @@ class PieChartView @JvmOverloads constructor(
         // 라벨 텍스트 그리기
         textPaint.color = Color.WHITE
         canvas.drawText(labelText, endX, endY + textHeight / 4, textPaint)
+    }
+    
+    private fun drawOverlayText(canvas: Canvas, centerX: Float, centerY: Float, radius: Float) {
+        if (overlayText.isEmpty()) return
+        
+        // 오버레이 텍스트 설정
+        val overlayPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        overlayPaint.textSize = if (isFullscreen) 48f else 32f
+        overlayPaint.textAlign = Paint.Align.CENTER
+        overlayPaint.color = Color.WHITE
+        overlayPaint.setShadowLayer(6f, 3f, 3f, Color.BLACK)
+        
+        // 텍스트 크기 측정
+        val textBounds = Rect()
+        overlayPaint.getTextBounds(overlayText, 0, overlayText.length, textBounds)
+        val textWidth = textBounds.width().toFloat()
+        val textHeight = textBounds.height().toFloat()
+        
+        // 오버레이 배경 설정
+        val padding = 20f
+        val bgWidth = textWidth + padding * 2
+        val bgHeight = textHeight + padding * 2
+        
+        // 오버레이 위치 (차트 하단 중앙)
+        val overlayX = centerX
+        val overlayY = centerY + radius + 100f // 차트 아래쪽에 배치
+        
+        // 배경 그리기
+        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        bgPaint.color = Color.argb(220, 0, 0, 0) // 반투명 검은색 배경
+        bgPaint.style = Paint.Style.FILL
+        canvas.drawRoundRect(
+            overlayX - bgWidth / 2,
+            overlayY - bgHeight / 2,
+            overlayX + bgWidth / 2,
+            overlayY + bgHeight / 2,
+            15f, 15f, bgPaint
+        )
+        
+        // 테두리 그리기
+        val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        borderPaint.color = colors[selectedSectorIndex % colors.size]
+        borderPaint.style = Paint.Style.STROKE
+        borderPaint.strokeWidth = 4f
+        canvas.drawRoundRect(
+            overlayX - bgWidth / 2,
+            overlayY - bgHeight / 2,
+            overlayX + bgWidth / 2,
+            overlayY + bgHeight / 2,
+            15f, 15f, borderPaint
+        )
+        
+        // 텍스트 그리기
+        canvas.drawText(overlayText, overlayX, overlayY + textHeight / 3, overlayPaint)
     }
     
 }
